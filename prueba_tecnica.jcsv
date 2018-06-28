@@ -1,0 +1,361 @@
+Resolución Prueba Técnica - Mediastream
+
+Ingreso a la máquina
+Cambiar permisos del archivo (quedó con 755 al bajarlo...)
+$ chmod 600 sysadmintest.pem
+Ingresar a la máquina
+$ ssh -i sysadmintest.pem ubuntu@52.86.239.48
+The authenticity of host '52.86.239.48 (52.86.239.48)' can't be established.
+ECDSA key fingerprint is SHA256:l0+ZCYMpCnyRZhrIW3klGOuTzxN1x26ZNKP+zSgGe/o.
+ECDSA key fingerprint is MD5:de:64:0a:af:ea:df:d6:35:44:ee:47:f1:82:0f:d6:e0.
+Are you sure you want to continue connecting (yes/no)? yes
+(Omitido)
+Ubuntu comes with ABSOLUTELY NO WARRANTY, to the extent permitted by
+applicable law.
+
+ubuntu@ip-10-0-1-249:~$
+-------------------------------------------------------------------------------
+Información de la máquina
+$ uname -a
+Linux ip-10-0-1-249 3.13.0-125-generic #174-Ubuntu SMP Mon Jul 10 18:51:24 UTC 2017 x86_64 x86_64 x86_64 GNU/Linux
+$ df -h
+Filesystem      Size  Used Avail Use% Mounted on
+udev            3.9G   12K  3.9G   1% /dev
+tmpfs           799M  340K  799M   1% /run
+/dev/xvda1      7.8G  807M  6.6G  11% /
+none            4.0K     0  4.0K   0% /sys/fs/cgroup
+none            5.0M     0  5.0M   0% /run/lock
+none            3.9G     0  3.9G   0% /run/shm
+none            100M     0  100M   0% /run/user
+$ lsblk -o NAME,SIZE,FSTYPE,TYPE,MOUNTPOINT
+NAME    SIZE FSTYPE TYPE MOUNTPOINT
+xvda      8G        disk
+└─xvda1   8G        part /
+xvdb      8G        disk
+xvdc      8G        disk
+$ cat /etc/fstab
+LABEL=cloudimg-rootfs	/	 ext4	defaults,discard	0 0
+-------------------------------------------------------------------------------
+Instalación mdadm y creación RAID0
+Actualizar e instalar mdadm
+$ sudo apt-get update
+$ sudo apt-get install mdadm
+$ sudo mdadm --create --verbose /dev/md/mediastream --level=0 --raid-devices=2 /dev/xvdb /dev/xvdc
+mdadm: chunk size defaults to 512K
+mdadm: Defaulting to version 1.2 metadata
+mdadm: array /dev/md/mediastream started.
+
+Verificación de correcta creación del RAID0
+$ cat /proc/mdstat
+Personalities : [raid0]
+md127 : active raid0 xvdc[1] xvdb[0]
+      16776192 blocks super 1.2 512k chunks
+
+Creación y montaje del filesystem
+$ sudo mkfs.ext4 -F /dev/md/mediastream
+mke2fs 1.42.9 (4-Feb-2014)
+Filesystem label=
+OS type: Linux
+Block size=4096 (log=2)
+Fragment size=4096 (log=2)
+Stride=128 blocks, Stripe width=256 blocks
+1048576 inodes, 4194048 blocks
+209702 blocks (5.00%) reserved for the super user
+First data block=0
+Maximum filesystem blocks=4294967296
+128 block groups
+32768 blocks per group, 32768 fragments per group
+8192 inodes per group
+Superblock backups stored on blocks:
+	32768, 98304, 163840, 229376, 294912, 819200, 884736, 1605632, 2654208,
+	4096000
+
+Allocating group tables: done
+Writing inode tables: done
+Creating journal (32768 blocks): done
+Writing superblocks and filesystem accounting information: done
+
+$ sudo mkdir -p /mediastream
+$ sudo mount /dev/md/mediastream /mediastream
+Verificación de creación de partición /mediastream
+$ df -h
+Filesystem      Size  Used Avail Use% Mounted on
+udev            3.9G   12K  3.9G   1% /dev
+tmpfs           799M  356K  799M   1% /run
+/dev/xvda1      7.8G  857M  6.5G  12% /
+none            4.0K     0  4.0K   0% /sys/fs/cgroup
+none            5.0M     0  5.0M   0% /run/lock
+none            3.9G     0  3.9G   0% /run/shm
+none            100M     0  100M   0% /run/user
+/dev/md127       16G   44M   15G   1% /mediastream
+$ df -h -x devtmpfs -x tmpfs
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/xvda1      7.8G  857M  6.5G  12% /
+/dev/md127       16G   44M   15G   1% /mediastream
+-------------------------------------------------------------------------------
+Instalación y configuración de Nginx
+$ sudo apt-get install nginx
+
+Editar configuración de Nginx para mejorar rendimiento acorde a la carga:
+$ sudo vim /etc/nginx/nginx.conf
+worker_processes auto;
+worker_connections 1024;
+Cambiar destino de logs a carpeta de mediastream:
+access_log /mediastream/nginx/log/access.log;
+error_log /mediastream/nginx/log/error.log;
+Agregar carpeta de configuración específica para prueba de mediastream
+include /mediastream/nginx/*.conf;
+
+Crear carpetas, para tener el log
+$ sudo mkdir -p /mediastream/nginx/log
+
+Iniciar Nginx
+$ sudo /etc/init.d/nginx start
+
+Crear una carpeta para los sitios http público y local
+$ sudo mkdir -p /mediastream/http/public
+$ sudo mkdir -p /mediastream/http/local
+
+Creación sitio público:
+$ sudo vim /mediastream/nginx/public.conf
+
+server {
+        listen 80 default_server;
+        server_name _;
+
+        root /mediastream/http/public;
+        index index.html;
+}
+Verificación de acceso desde el log de Nginx
+==> /mediastream/nginx/log/access.log <==
+190.160.182.102 - - [27/Jun/2018:22:57:04 +0000] "GET / HTTP/1.1" 200 150 "-" "Mozilla/5.0 (X11; Fedora; Linux x86_64; rv:60.0) Gecko/20100101 Firefox/60.0"
+
+Creación sitio local:
+$ sudo vim /mediastream/nginx/local.conf
+
+server {
+        listen 80;
+        server_name interno.mediastre.am;
+
+        root /mediastream/http/local;
+        index index.html;
+
+        location / {
+                allow 127.0.0.1;
+                allow 52.86.239.48;
+                deny all;
+        }
+}
+
+Prefiero el bloqueo de IP por Nginx, ya que se hace específico por sitio.
+Al cambiar en las IP tables, el cambio podría aplicarse a todos los sitios alojados en la máquina, lo cual generaría una posible negación del servicio para otros sitios.
+Además, al estar en la configuración de Ngnix, es más fácil diagnosticar algún problema que un usuario pueda tener al momento de acceder, teniendo además el log de errores de Nginx como respaldo para ayudar con el diagnóstico en caso tal.
+
+Modificación /etc/hosts para que reconozca el dominio
+$ sudo vim /etc/hosts
+127.0.0.1 localhost interno.mediastre.am
+Verificación de reconocimiento de dominio
+$ ping interno.mediastre.am
+PING localhost (127.0.0.1) 56(84) bytes of data.
+64 bytes from localhost (127.0.0.1): icmp_seq=1 ttl=64 time=0.015 ms
+
+Verificación de acceso desde máquina local
+$ curl interno.mediastre.am
+<h1 style="color: #;">
+<span style="color: #99cc00;">Test mdstrm</span>&nbsp;
+<span style="color: #000000; background-color:#ffffff;">accesible desde localhost</span></h1>
+
+Verificación de acceso desde mi máquina
+$ curl 52.86.239.48
+<h1 style="color: #;">
+<span style="color: #99cc00;">Test mdstrm</span>&nbsp;
+<span style="color: #000000; background-color:#ffffff;">sitio accesible desde internet</span></h1>
+
+Cambié mi /etc/hosts para que resolviera interno.mediastre.am a la máquina, para probar con nombre de dominio
+$ curl interno.mediastre.am
+<html>
+<head><title>403 Forbidden</title></head>
+<body bgcolor="white">
+<center><h1>403 Forbidden</h1></center>
+<hr><center>nginx/1.4.6 (Ubuntu)</center>
+</body>
+</html>
+
+Verificar que no dañé el sitio público
+$ curl 52.86.239.48
+<h1 style="color: #;">
+<span style="color: #99cc00;">Test mdstrm</span>&nbsp;
+<span style="color: #000000; background-color:#ffffff;">sitio accesible desde internet</span></h1>
+
+-------------------------------------------------------------------------------
+
+Instalación y configuración de proftpd
+
+$ sudo apt-get install proftpd
+
+Cambiar el destino de los archivos, para evitar acceso a otras carpetas del sistema
+DefaultRoot                     /mediastream/proftpd/files mediastream
+
+Cambio de archivo de logs a mediastream
+TransferLog /mediastream/proftpd/log/xferlog
+SystemLog   /mediastream/proftpd/log/proftpd.log
+
+Creación de usuario mediastream en el sistema para que pueda acceder al ftp
+$ sudo adduser mediastream
+Adding user `mediastream' ...
+Adding new group `mediastream' (1001) ...
+Adding new user `mediastream' (1001) with group `mediastream' ...
+Creating home directory `/home/mediastream' ...
+Copying files from `/etc/skel' ...
+Enter new UNIX password:
+Retype new UNIX password:
+passwd: password updated successfully
+Changing the user information for mediastream
+Enter the new value, or press ENTER for the default
+	Full Name []: media
+	Room Number []: 1
+	Work Phone []: 123456789
+	Home Phone []: 987654321
+	Other []:
+Is the information correct? [Y/n] Y
+
+Verificación de acceso a servicio desde mi máquina
+$ ftp 52.86.239.48
+Connected to 52.86.239.48 (52.86.239.48).
+220 ProFTPD 1.3.5rc3 Server (Debian) [::ffff:10.0.1.249]
+Name (52.86.239.48:juan): mediastream
+331 Password required for mediastream
+Password:
+230 User mediastream logged in
+Remote system type is UNIX.
+Using binary mode to transfer files.
+ftp>
+
+Log de ProFTPD
+==> proftpd/log/proftpd.log <==
+2018-06-27 23:39:16,132 ip-10-0-1-249 proftpd[8712] ip-10-0-1-249.ec2.internal: ProFTPD 1.3.5rc3 (devel) (built Fri Feb 17 2017 19:15:12 UTC) standalone mode STARTUP
+2018-06-27 23:39:53,972 ip-10-0-1-249 proftpd[8715] ip-10-0-1-249.ec2.internal (pc-102-182-160-190.cm.vtr.net[190.160.182.102]): FTP session opened.
+2018-06-27 23:40:00,286 ip-10-0-1-249 proftpd[8715] ip-10-0-1-249.ec2.internal (pc-102-182-160-190.cm.vtr.net[190.160.182.102]): Preparing to chroot to directory '/mediastream/proftpd/files'
+2018-06-27 23:40:00,289 ip-10-0-1-249 proftpd[8715] ip-10-0-1-249.ec2.internal (pc-102-182-160-190.cm.vtr.net[190.160.182.102]): USER mediastream: Login successful.
+
+-------------------------------------------------------------------------------
+
+Instalación de mongodb versión 3.2
+
+Verificar versión de Ubuntu
+$ lsb_release -a
+No LSB modules are available.
+Distributor ID:	Ubuntu
+Description:	Ubuntu 14.04.5 LTS
+Release:	14.04
+Codename:	trusty
+
+Siguiendo instrucciones de documentación de mongodb
+https://docs.mongodb.com/v3.2/tutorial/install-mongodb-on-ubuntu/
+
+Agregar la llave pública:
+$ sudo apt-key adv --keyserver hkp://keyserver.ubuntu.com:80 --recv EA312927
+Executing: gpg --ignore-time-conflict --no-options --no-default-keyring --homedir /tmp/tmp.7Poa7kVwhQ --no-auto-check-trustdb --trust-model always --keyring /etc/apt/trusted.gpg --primary-keyring /etc/apt/trusted.gpg --keyserver hkp://keyserver.ubuntu.com:80 --recv EA312927
+gpg: requesting key EA312927 from hkp server keyserver.ubuntu.com
+gpg: key EA312927: public key "MongoDB 3.2 Release Signing Key <packaging@mongodb.com>" imported
+gpg: Total number processed: 1
+gpg:               imported: 1  (RSA: 1)
+
+Crear listado de los repos de MongoDB, específicos para Ubuntu 14.04
+$ echo "deb http://repo.mongodb.org/apt/ubuntu trusty/mongodb-org/3.2 multiverse" | sudo tee /etc/apt/sources.list.d/mongodb-org-3.2.list
+deb http://repo.mongodb.org/apt/ubuntu trusty/mongodb-org/3.2 multiverse
+
+Recargar base de datos de paquetes
+$ sudo apt-get update
+(Omitido)
+Fetched 3,549 kB in 2s (1,723 kB/s)
+Reading package lists... Done
+
+Instalar MongoDB 3.2
+$ sudo apt-get install -y mongodb-org=3.2.20 mongodb-org-server=3.2.20 mongodb-org-shell=3.2.20 mongodb-org-mongos=3.2.20 mongodb-org-tools=3.2.20
+Reading package lists... Done
+Building dependency tree
+Reading state information... Done
+The following NEW packages will be installed:
+  mongodb-org mongodb-org-mongos mongodb-org-server mongodb-org-shell
+  mongodb-org-tools
+0 upgraded, 5 newly installed, 0 to remove and 109 not upgraded.
+Need to get 50.8 MB of archives.
+After this operation, 211 MB of additional disk space will be used.
+(Omitido)
+Adding system user `mongodb' (UID 109) ...
+Adding new user `mongodb' (UID 109) with group `nogroup' ...
+Not creating home directory `/home/mongodb'.
+Adding group `mongodb' (GID 114) ...
+Done.
+Adding user `mongodb' to group `mongodb' ...
+Adding user mongodb to group mongodb
+Done.
+mongod start/running, process 9157
+Setting up mongodb-org-mongos (3.2.20) ...
+Setting up mongodb-org-tools (3.2.20) ...
+Processing triggers for ureadahead (0.100.0-16) ...
+Setting up mongodb-org (3.2.20) ...
+
+Log de MongoDB arriba y en ejecución
+$ tail /var/log/mongodb/mongod.log
+2018-06-27T23:58:32.265+0000 I FTDC     [initandlisten] Initializing full-time diagnostic data capture with directory '/var/lib/mongodb/diagnostic.data'
+2018-06-27T23:58:32.265+0000 I NETWORK  [initandlisten] waiting for connections on port 27017
+2018-06-27T23:58:32.265+0000 I NETWORK  [HostnameCanonicalizationWorker] Starting hostname canonicalization worker
+-------------------------------------------------------------------------------
+
+Para el script de recolección de estadísticas, lo creé en /mediastream/scripts/recolecta.sh
+
+El crontab del script se dejó de la siguiente manera:
+*/5 * * * * /bin/bash /mediastream/scripts/recolecta.sh
+
+Se deja con screen con título JCSV, corriendo el log del archivo /mediastream/recolecta_info.log
+-------------------------------------------------------------------------------
+Para el backup de MongoDB, cree un script en /mediastream/scripts/mongobk.sh.
+
+El crontab para éste script quedó así:.
+0 5,20 * * * /bin/bash /mediastream/scripts/mongobk.sh
+
+-------------------------------------------------------------------------------
+
+Configuración de servicios al arranque en caso de caída del servidor
+Nginx
+$ sudo update-rc.d nginx enable
+update-rc.d: warning:  start runlevel arguments (none) do not match nginx Default-Start values (2 3 4 5)
+update-rc.d: warning:  stop runlevel arguments (none) do not match nginx Default-Stop values (0 1 6)
+ Enabling system startup links for /etc/init.d/nginx ...
+ Adding system startup for /etc/init.d/nginx ...
+   /etc/rc0.d/K20nginx -> ../init.d/nginx
+   /etc/rc1.d/K20nginx -> ../init.d/nginx
+   /etc/rc6.d/K20nginx -> ../init.d/nginx
+   /etc/rc2.d/S20nginx -> ../init.d/nginx
+   /etc/rc3.d/S20nginx -> ../init.d/nginx
+   /etc/rc4.d/S20nginx -> ../init.d/nginx
+   /etc/rc5.d/S20nginx -> ../init.d/nginx
+ProFTPD
+$ sudo update-rc.d proftpd enable
+update-rc.d: warning:  start runlevel arguments (none) do not match proftpd Default-Start values (2 3 4 5)
+update-rc.d: warning:  stop runlevel arguments (none) do not match proftpd Default-Stop values (0 1 6)
+ Enabling system startup links for /etc/init.d/proftpd ...
+ Adding system startup for /etc/init.d/proftpd ...
+  /etc/rc0.d/K50proftpd -> ../init.d/proftpd
+  /etc/rc1.d/K50proftpd -> ../init.d/proftpd
+  /etc/rc6.d/K50proftpd -> ../init.d/proftpd
+  /etc/rc2.d/S50proftpd -> ../init.d/proftpd
+  /etc/rc3.d/S50proftpd -> ../init.d/proftpd
+  /etc/rc4.d/S50proftpd -> ../init.d/proftpd
+  /etc/rc5.d/S50proftpd -> ../init.d/proftpd
+MongoDB
+Quedó habilitado durante la instalación, con el siguiente comando gracias al archivo /etc/init/mongodb.conf
+$ sudo service mongod start
+
+-------------------------------------------------------------------------------
+
+Para GIT, cree el repositorio https://github.com/jsantama/mediastream y todas las configuraciones y shell quedaron en /opt
+
+-------------------------------------------------------------------------------
+
+Con respecto al tema de BGP con ASN, debo admitir que hace mucho tiempo no he tocado el tema y no tengo una respuesta desde mi punto de vista aceptable. Solamente puedo indicar un tema de balanceo con enlaces monitoreados, dándole 60% del tráfico al enlace con 100 Mbps y 40% al de 70 Mbps.
+Para la alta disponibilidad, publicaría las rutas por BGP usando diferentes prioridades, según el enlace.
+Con el fin de enviar el tráfico de Colombia, añadiría por el enlace de 70 Mbps las redes nacionales de manera estática, con el fin de garantizar que el tráfico internacional tenga mayor capacidad en caso de ser necesario (y evitar congestión, en caso de saturación internacional del evento)
+
